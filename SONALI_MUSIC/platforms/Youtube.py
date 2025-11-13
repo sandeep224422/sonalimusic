@@ -17,7 +17,7 @@ import logging
 import aiohttp
 
 # External API endpoints
-HEROKU_API_BASE = "http://yt-apizefron-9930f07c38ef.herokuapp.com"
+HEROKU_API_BASE = "https://yt-apizefron-9930f07c38ef.herokuapp.com"
 NEW_API_URL = "https://apikeyy-zeta.vercel.app/api"
 
 
