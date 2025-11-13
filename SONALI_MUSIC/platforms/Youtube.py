@@ -26,12 +26,12 @@ def cookie_txt_file():
         cookie_dir = f"{os.getcwd()}/cookies"
         if not os.path.exists(cookie_dir):
             os.makedirs(cookie_dir, exist_ok=True)
-            return None  # Return None if directory doesn't exist
+            return None
         
         cookies_files = [f for f in os.listdir(cookie_dir) if f.endswith(".txt")]
         
         if not cookies_files:
-            return None  # Return None if no cookie files found
+            return None
         
         cookie_file = os.path.join(cookie_dir, random.choice(cookies_files))
         if os.path.exists(cookie_file):
@@ -50,11 +50,9 @@ async def download_song(link: str, media_type: str = "audio"):
     elif 'youtu.be/' in link:
         video_id = link.split('youtu.be/')[-1].split('?')[0].split('&')[0]
     elif len(link) == 11 and link.replace('-', '').replace('_', '').isalnum():
-        # Already a video ID
         video_id = link
     
     if not video_id:
-        # Fallback: try to extract from any format
         match = re.search(r'(?:v=|/)([0-9A-Za-z_-]{11})', link)
         if match:
             video_id = match.group(1)
@@ -66,7 +64,7 @@ async def download_song(link: str, media_type: str = "audio"):
     video_id = video_id.split('_')[-1] if '_' in video_id else video_id
 
     download_folder = "downloads"
-    os.makedirs(download_folder, exist_ok=True)  # Ensure directory exists
+    os.makedirs(download_folder, exist_ok=True)
     
     if media_type == "video":
         preferred_exts = ["mp4", "mkv", "webm"]
@@ -79,6 +77,7 @@ async def download_song(link: str, media_type: str = "audio"):
     for ext in preferred_exts:
         file_path = os.path.join(download_folder, f"{video_id}.{ext}")
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            print(f"File already exists: {file_path}")
             return file_path
     
     heroku_endpoint = "video" if media_type == "video" else "audio"
@@ -86,17 +85,27 @@ async def download_song(link: str, media_type: str = "audio"):
     fallback_endpoint = "video" if media_type == "video" else "song"
     new_song_url = f"{NEW_API_URL}/{fallback_endpoint}/{video_id}"
 
-    async with aiohttp.ClientSession() as session:
+    # Create timeout for downloads
+    timeout = aiohttp.ClientTimeout(total=300, connect=30)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            # Try Heroku API first - it streams the file directly
-            headers = {'User-Agent': 'python-aiohttp/1.0'}  # Ensure API client detection
-            async with session.get(heroku_url, headers=headers) as response:
+            # Try Heroku API first - with proper headers for API client detection
+            headers = {
+                'User-Agent': 'python-aiohttp/1.0',
+                'Accept': 'audio/*, video/*, */*'  # Important for API detection
+            }
+            
+            print(f"🔗 Requesting from Heroku API: {heroku_url}")
+            
+            async with session.get(heroku_url, headers=headers, allow_redirects=True) as response:
+                print(f"📊 API Response Status: {response.status}")
+                
                 if response.status == 200:
-                    # API directly streams the file, not JSON
                     content_type = response.headers.get('Content-Type', '')
-                    file_extension = default_ext
+                    print(f"📦 Content-Type: {content_type}")
                     
-                    # Try to determine extension from content-type
+                    file_extension = default_ext
                     if 'video' in content_type:
                         file_extension = "mp4"
                     elif 'audio' in content_type:
@@ -108,41 +117,93 @@ async def download_song(link: str, media_type: str = "audio"):
                     file_name = f"{video_id}.{file_extension}"
                     file_path = os.path.join(download_folder, file_name)
                     
-                    # Download the stream directly
+                    print(f"💾 Downloading to: {file_path}")
+                    
                     try:
+                        total_size = 0
                         with open(file_path, 'wb') as f:
                             async for chunk in response.content.iter_chunked(8192):
-                                if not chunk:
-                                    break
-                                f.write(chunk)
+                                if chunk:
+                                    f.write(chunk)
+                                    total_size += len(chunk)
+                        
+                        print(f"✅ Downloaded {total_size} bytes")
                         
                         # Verify file was downloaded successfully
                         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                            print(f"✅ File verified: {file_path} ({os.path.getsize(file_path)} bytes)")
                             return file_path
                         else:
-                            # Remove incomplete file
                             if os.path.exists(file_path):
                                 os.remove(file_path)
-                            print(f"Downloaded file is empty or doesn't exist: {file_path}")
+                            print(f"❌ Downloaded file is empty: {file_path}")
                     except Exception as e:
-                        # Clean up on error
                         if os.path.exists(file_path):
                             try:
                                 os.remove(file_path)
                             except:
                                 pass
-                        print(f"Error writing file {file_path}: {e}")
+                        print(f"❌ Error writing file {file_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                elif response.status == 302:
+                    # Handle redirect
+                    redirect_url = response.headers.get('Location')
+                    print(f"🔄 Redirect detected to: {redirect_url}")
+                    if redirect_url:
+                        async with session.get(redirect_url, headers=headers) as redirect_response:
+                            if redirect_response.status == 200:
+                                content_type = redirect_response.headers.get('Content-Type', '')
+                                file_extension = default_ext
+                                if 'video' in content_type:
+                                    file_extension = "mp4"
+                                elif 'audio' in content_type:
+                                    if 'mpeg' in content_type or 'mp3' in content_type:
+                                        file_extension = "mp3"
+                                    elif 'm4a' in content_type:
+                                        file_extension = "m4a"
+                                
+                                file_name = f"{video_id}.{file_extension}"
+                                file_path = os.path.join(download_folder, file_name)
+                                
+                                try:
+                                    with open(file_path, 'wb') as f:
+                                        async for chunk in redirect_response.content.iter_chunked(8192):
+                                            if chunk:
+                                                f.write(chunk)
+                                    
+                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                        print(f"✅ File downloaded from redirect: {file_path}")
+                                        return file_path
+                                    else:
+                                        if os.path.exists(file_path):
+                                            os.remove(file_path)
+                                except Exception as e:
+                                    if os.path.exists(file_path):
+                                        try:
+                                            os.remove(file_path)
+                                        except:
+                                            pass
+                                    print(f"❌ Error downloading from redirect: {e}")
                 else:
-                    print(f"Heroku API failed with status: {response.status}")
+                    error_text = await response.text()
+                    print(f"❌ Heroku API failed with status: {response.status}")
+                    print(f"Response: {error_text[:200]}")
+        except aiohttp.ClientError as e:
+            print(f"❌ Heroku API network error: {e}")
+            import traceback
+            traceback.print_exc()
         except Exception as e:
-            print(f"Heroku API failed: {e}")
+            print(f"❌ Heroku API failed: {e}")
+            import traceback
+            traceback.print_exc()
 
+        # Try fallback API
         try:
-            # Try hardcoded API as fallback (this one might return JSON)
+            print(f"🔄 Trying fallback API: {new_song_url}")
             async with session.get(new_song_url) as response:
                 if response.status == 200:
                     content_type = response.headers.get('Content-Type', '')
-                    # Check if response is JSON or direct stream
                     if 'application/json' in content_type:
                         data = await response.json()
                         download_url = data.get("link") or data.get("url")
@@ -150,7 +211,6 @@ async def download_song(link: str, media_type: str = "audio"):
                             data.setdefault("format", default_ext)
                             return await download_file(session, download_url, video_id, data)
                     else:
-                        # Direct stream
                         file_extension = default_ext
                         if 'video' in content_type:
                             file_extension = "mp4"
@@ -166,9 +226,8 @@ async def download_song(link: str, media_type: str = "audio"):
                         try:
                             with open(file_path, 'wb') as f:
                                 async for chunk in response.content.iter_chunked(8192):
-                                    if not chunk:
-                                        break
-                                    f.write(chunk)
+                                    if chunk:
+                                        f.write(chunk)
                             
                             if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                                 return file_path
@@ -181,14 +240,13 @@ async def download_song(link: str, media_type: str = "audio"):
                                     os.remove(file_path)
                                 except:
                                     pass
-                            print(f"Error writing file {file_path}: {e}")
+                            print(f"❌ Error writing file {file_path}: {e}")
                 else:
-                    print(f"Hardcoded API failed with status: {response.status}")
+                    print(f"❌ Fallback API failed with status: {response.status}")
         except Exception as e:
-            print(f"Hardcoded API failed: {e}")
+            print(f"❌ Fallback API failed: {e}")
         
-        # If hardcoded API fails, return None to use cookies fallback
-        print("Hardcoded API failed, will use cookies method")
+        print("❌ All APIs failed, will use cookies method")
         return None
 
 
@@ -209,15 +267,14 @@ async def download_file(session, download_url, video_id, data):
 
         async with session.get(download_url) as file_response:
             if file_response.status != 200:
-                print(f"Download URL returned status {file_response.status}")
+                print(f"❌ Download URL returned status {file_response.status}")
                 return None
                 
             try:
                 with open(file_path, 'wb') as f:
                     async for chunk in file_response.content.iter_chunked(8192):
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                        if chunk:
+                            f.write(chunk)
                 
                 if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                     return file_path
@@ -231,13 +288,13 @@ async def download_file(session, download_url, video_id, data):
                         os.remove(file_path)
                     except:
                         pass
-                print(f"Error writing file {file_path}: {e}")
+                print(f"❌ Error writing file {file_path}: {e}")
                 return None
     except aiohttp.ClientError as e:
-        print(f"Network or client error occurred while downloading: {e}")
+        print(f"❌ Network or client error occurred while downloading: {e}")
         return None
     except Exception as e:
-        print(f"Error occurred while downloading song: {e}")
+        print(f"❌ Error occurred while downloading song: {e}")
         return None
 
 async def check_file_size(link):
@@ -581,7 +638,6 @@ class YouTubeAPI:
                 ydl_optssx["cookiefile"] = cookie_file
             x = yt_dlp.YoutubeDL(ydl_optssx)
             x.download([link])
-            # Check if file was created
             possible_paths = [f"downloads/{title}.mp4", f"downloads/{title}"]
             for path in possible_paths:
                 if os.path.exists(path) and os.path.getsize(path) > 0:
@@ -611,7 +667,6 @@ class YouTubeAPI:
                 ydl_optssx["cookiefile"] = cookie_file
             x = yt_dlp.YoutubeDL(ydl_optssx)
             x.download([link])
-            # Check if file was created
             possible_paths = [f"downloads/{title}.mp3", f"downloads/{title}.m4a"]
             for path in possible_paths:
                 if os.path.exists(path) and os.path.getsize(path) > 0:
@@ -622,7 +677,6 @@ class YouTubeAPI:
             downloaded_file = await download_song(link, media_type="video")
             if downloaded_file and os.path.exists(downloaded_file):
                 return downloaded_file
-            # Fallback to cookies method if hardcoded API fails
             print("Using cookies fallback for song video download")
             try:
                 downloaded_file = await loop.run_in_executor(None, song_video_dl)
@@ -630,13 +684,14 @@ class YouTubeAPI:
                     return downloaded_file
             except Exception as e:
                 print(f"Cookies fallback failed: {e}")
+                import traceback
+                traceback.print_exc()
             raise FileNotFoundError(f"Failed to download video for {link}")
             
         elif songaudio:
             downloaded_file = await download_song(link, media_type="audio")
             if downloaded_file and os.path.exists(downloaded_file):
                 return downloaded_file
-            # Fallback to cookies method if hardcoded API fails
             print("Using cookies fallback for song audio download")
             try:
                 downloaded_file = await loop.run_in_executor(None, song_audio_dl)
@@ -644,6 +699,8 @@ class YouTubeAPI:
                     return downloaded_file
             except Exception as e:
                 print(f"Cookies fallback failed: {e}")
+                import traceback
+                traceback.print_exc()
             raise FileNotFoundError(f"Failed to download audio for {link}")
             
         elif video:
@@ -652,7 +709,6 @@ class YouTubeAPI:
                 downloaded_file = await download_song(link, media_type="video")
                 if downloaded_file and os.path.exists(downloaded_file):
                     return downloaded_file, direct
-                # Fallback to cookies method if hardcoded API fails
                 print("Using cookies fallback for video download")
                 file_size = await check_file_size(link)
                 if not file_size:
@@ -668,6 +724,8 @@ class YouTubeAPI:
                         return downloaded_file, direct
                 except Exception as e:
                     print(f"Video download failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                 return None, direct
             else:
                 proc = await asyncio.create_subprocess_exec(
@@ -701,13 +759,14 @@ class YouTubeAPI:
                            return downloaded_file, direct
                    except Exception as e:
                        print(f"Video download failed: {e}")
+                       import traceback
+                       traceback.print_exc()
                    return None, direct
         else:
             direct = True
             downloaded_file = await download_song(link, media_type="audio")
             if downloaded_file and os.path.exists(downloaded_file):
                 return downloaded_file, direct
-            # Fallback to cookies method if hardcoded API fails
             print("Using cookies fallback for audio download")
             try:
                 downloaded_file = await loop.run_in_executor(None, audio_dl)
@@ -715,4 +774,6 @@ class YouTubeAPI:
                     return downloaded_file, direct
             except Exception as e:
                 print(f"Audio download failed: {e}")
+                import traceback
+                traceback.print_exc()
             raise FileNotFoundError(f"Failed to download audio for {link}")
