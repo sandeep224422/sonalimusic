@@ -17,7 +17,7 @@ import logging
 import aiohttp
 
 # External API endpoints
-HEROKU_API_BASE = "https://yt-apizefron-9930f07c38ef.herokuapp.com"
+HEROKU_API_BASE = "http://yt-apizefron-9930f07c38ef.herokuapp.com"
 NEW_API_URL = "https://apikeyy-zeta.vercel.app/api"
 
 
@@ -30,13 +30,35 @@ def cookie_txt_file():
 
 
 async def download_song(link: str, media_type: str = "audio"):
-    video_id = link.split('v=')[-1].split('&')[0]
+    # Extract video ID from various YouTube URL formats
+    video_id = None
+    if 'v=' in link:
+        video_id = link.split('v=')[-1].split('&')[0].split('#')[0]
+    elif 'youtu.be/' in link:
+        video_id = link.split('youtu.be/')[-1].split('?')[0].split('&')[0]
+    elif len(link) == 11 and link.replace('-', '').replace('_', '').isalnum():
+        # Already a video ID
+        video_id = link
+    
+    if not video_id:
+        # Fallback: try to extract from any format
+        match = re.search(r'(?:v=|/)([0-9A-Za-z_-]{11})', link)
+        if match:
+            video_id = match.group(1)
+        else:
+            print(f"Could not extract video ID from link: {link}")
+            return None
+    
+    # Clean video ID (remove prefixes like "0_")
+    video_id = video_id.split('_')[-1] if '_' in video_id else video_id
 
     download_folder = "downloads"
     if media_type == "video":
         preferred_exts = ["mp4", "mkv", "webm"]
+        default_ext = "mp4"
     else:
         preferred_exts = ["mp3", "m4a", "webm"]
+        default_ext = "mp3"
 
     for ext in preferred_exts:
         file_path = f"{download_folder}/{video_id}.{ext}"
@@ -51,28 +73,75 @@ async def download_song(link: str, media_type: str = "audio"):
 
     async with aiohttp.ClientSession() as session:
         try:
-            # Try Heroku API first
+            # Try Heroku API first - it streams the file directly
             async with session.get(heroku_url) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    download_url = data.get("link") or data.get("url")
-                    if download_url:
-                        data.setdefault("format", "mp4" if media_type == "video" else "mp3")
-                        return await download_file(session, download_url, video_id, data)
+                    # API directly streams the file, not JSON
+                    content_type = response.headers.get('Content-Type', '')
+                    file_extension = default_ext
+                    
+                    # Try to determine extension from content-type
+                    if 'video' in content_type:
+                        file_extension = "mp4"
+                    elif 'audio' in content_type:
+                        if 'mpeg' in content_type or 'mp3' in content_type:
+                            file_extension = "mp3"
+                        elif 'm4a' in content_type:
+                            file_extension = "m4a"
+                    
+                    file_name = f"{video_id}.{file_extension}"
+                    download_folder = "downloads"
+                    os.makedirs(download_folder, exist_ok=True)
+                    file_path = os.path.join(download_folder, file_name)
+                    
+                    # Download the stream directly
+                    with open(file_path, 'wb') as f:
+                        while True:
+                            chunk = await response.content.read(8192)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                    return file_path
                 else:
                     print(f"Heroku API failed with status: {response.status}")
         except Exception as e:
             print(f"Heroku API failed: {e}")
 
         try:
-            # Try hardcoded API as fallback
+            # Try hardcoded API as fallback (this one might return JSON)
             async with session.get(new_song_url) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    download_url = data.get("link") or data.get("url")
-                    if download_url:
-                        data.setdefault("format", "mp4" if media_type == "video" else "mp3")
-                        return await download_file(session, download_url, video_id, data)
+                    content_type = response.headers.get('Content-Type', '')
+                    # Check if response is JSON or direct stream
+                    if 'application/json' in content_type:
+                        data = await response.json()
+                        download_url = data.get("link") or data.get("url")
+                        if download_url:
+                            data.setdefault("format", default_ext)
+                            return await download_file(session, download_url, video_id, data)
+                    else:
+                        # Direct stream
+                        file_extension = default_ext
+                        if 'video' in content_type:
+                            file_extension = "mp4"
+                        elif 'audio' in content_type:
+                            if 'mpeg' in content_type or 'mp3' in content_type:
+                                file_extension = "mp3"
+                            elif 'm4a' in content_type:
+                                file_extension = "m4a"
+                        
+                        file_name = f"{video_id}.{file_extension}"
+                        download_folder = "downloads"
+                        os.makedirs(download_folder, exist_ok=True)
+                        file_path = os.path.join(download_folder, file_name)
+                        
+                        with open(file_path, 'wb') as f:
+                            while True:
+                                chunk = await response.content.read(8192)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        return file_path
                 else:
                     print(f"Hardcoded API failed with status: {response.status}")
         except Exception as e:
