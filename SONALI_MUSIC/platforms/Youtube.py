@@ -15,8 +15,10 @@ import glob
 import random
 import logging
 import aiohttp
-import config
-from config import API_URL, API_KEY, NEW_API_URL
+
+# External API endpoints
+HEROKU_API_BASE = "https://yt-apizefron-9930f07c38ef.herokuapp.com"
+NEW_API_URL = "https://apikeyy-zeta.vercel.app/api"
 
 
 def cookie_txt_file():
@@ -27,76 +29,70 @@ def cookie_txt_file():
     return cookie_file
 
 
-async def download_song(link: str):
+async def download_song(link: str, media_type: str = "audio"):
     video_id = link.split('v=')[-1].split('&')[0]
 
     download_folder = "downloads"
-    for ext in ["mp3", "m4a", "webm"]:
+    if media_type == "video":
+        preferred_exts = ["mp4", "mkv", "webm"]
+    else:
+        preferred_exts = ["mp3", "m4a", "webm"]
+
+    for ext in preferred_exts:
         file_path = f"{download_folder}/{video_id}.{ext}"
         if os.path.exists(file_path):
             #print(f"File already exists: {file_path}")
             return file_path
     
-    # Try new API first
-    new_song_url = f"{NEW_API_URL}/song/{video_id}"
+    heroku_endpoint = "video" if media_type == "video" else "audio"
+    heroku_url = f"{HEROKU_API_BASE}/{heroku_endpoint}/{video_id}"
+    fallback_endpoint = "video" if media_type == "video" else "song"
+    new_song_url = f"{NEW_API_URL}/{fallback_endpoint}/{video_id}"
+
     async with aiohttp.ClientSession() as session:
         try:
-            # Try new API first
+            # Try Heroku API first
+            async with session.get(heroku_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    download_url = data.get("link") or data.get("url")
+                    if download_url:
+                        data.setdefault("format", "mp4" if media_type == "video" else "mp3")
+                        return await download_file(session, download_url, video_id, data)
+                else:
+                    print(f"Heroku API failed with status: {response.status}")
+        except Exception as e:
+            print(f"Heroku API failed: {e}")
+
+        try:
+            # Try hardcoded API as fallback
             async with session.get(new_song_url) as response:
                 if response.status == 200:
                     data = await response.json()
                     download_url = data.get("link") or data.get("url")
                     if download_url:
-                        # Download from new API
+                        data.setdefault("format", "mp4" if media_type == "video" else "mp3")
                         return await download_file(session, download_url, video_id, data)
                 else:
-                    print(f"New API failed with status: {response.status}")
+                    print(f"Hardcoded API failed with status: {response.status}")
         except Exception as e:
-            print(f"New API failed: {e}")
+            print(f"Hardcoded API failed: {e}")
         
-        # Fallback to main API
-        print("New API failed, trying main API...")
-        try:
-            song_url = f"{API_URL}/song/{video_id}?api={API_KEY}"
-            async with session.get(song_url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    status = data.get("status", "").lower()
-                    if status == "done":
-                        download_url = data.get("link")
-                        if download_url:
-                            # Download from main API
-                            return await download_file(session, download_url, video_id, data)
-                    elif status == "downloading":
-                        # Wait for download to complete
-                        while True:
-                            await asyncio.sleep(2)
-                            async with session.get(song_url) as status_response:
-                                if status_response.status == 200:
-                                    status_data = await status_response.json()
-                                    status = status_data.get("status", "").lower()
-                                    if status == "done":
-                                        download_url = status_data.get("link")
-                                        if download_url:
-                                            return await download_file(session, download_url, video_id, status_data)
-                                        break
-                                    elif status == "error":
-                                        break
-                else:
-                    print(f"Main API failed with status: {response.status}")
-        except Exception as e:
-            print(f"Main API failed: {e}")
-        
-        # If both APIs fail, return None
-        print("Both APIs failed, falling back to cookies method")
+        # If hardcoded API fails, return None to use cookies fallback
+        print("Hardcoded API failed, will use cookies method")
         return None
 
 
 async def download_file(session, download_url, video_id, data):
     """Helper function to download file from URL"""
     try:
-        file_format = data.get("format", "mp3")
-        file_extension = file_format.lower()
+        file_format = data.get("ext") or data.get("format") or "mp3"
+        if isinstance(file_format, str) and "/" in file_format:
+            file_extension = file_format.split("/")[-1].lower()
+        else:
+            file_extension = str(file_format).lower()
+        if not file_extension:
+            file_extension = "mp3"
         file_name = f"{video_id}.{file_extension}"
         download_folder = "downloads"
         os.makedirs(download_folder, exist_ok=True)
@@ -457,32 +453,35 @@ class YouTubeAPI:
             x.download([link])
 
         if songvideo:
-            downloaded_file = await download_song(link)
+            downloaded_file = await download_song(link, media_type="video")
             if downloaded_file:
                 return downloaded_file
-            # Fallback to cookies method if APIs fail
+            # Fallback to cookies method if hardcoded API fails
+            print("Using cookies fallback for song video download")
             fpath = f"downloads/{link}.mp3"
             return fpath
         elif songaudio:
-            downloaded_file = await download_song(link)
+            downloaded_file = await download_song(link, media_type="audio")
             if downloaded_file:
                 return downloaded_file
-            # Fallback to cookies method if APIs fail
+            # Fallback to cookies method if hardcoded API fails
+            print("Using cookies fallback for song audio download")
             fpath = f"downloads/{link}.mp3"
             return fpath
         elif video:
             if await is_on_off(1):
                 direct = True
-                downloaded_file = await download_song(link)
+                downloaded_file = await download_song(link, media_type="video")
                 if not downloaded_file:
-                    # Fallback to cookies method if APIs fail
+                    # Fallback to cookies method if hardcoded API fails
+                    print("Using cookies fallback for video download")
                     file_size = await check_file_size(link)
                     if not file_size:
                         print("None file Size")
                         return
                     total_size_mb = file_size / (1024 * 1024)
                     if total_size_mb > 250:
-                        print(f"File size {total_size_mb:.2f} MB exceeds the 100MB limit.")
+                        print(f"File size {total_size_mb:.2f} MB exceeds the 250MB limit.")
                         return None
                     downloaded_file = await loop.run_in_executor(None, video_dl)
             else:
@@ -507,14 +506,15 @@ class YouTubeAPI:
                      return
                    total_size_mb = file_size / (1024 * 1024)
                    if total_size_mb > 250:
-                     print(f"File size {total_size_mb:.2f} MB exceeds the 100MB limit.")
+                     print(f"File size {total_size_mb:.2f} MB exceeds the 250MB limit.")
                      return None
                    direct = True
                    downloaded_file = await loop.run_in_executor(None, video_dl)
         else:
             direct = True
-            downloaded_file = await download_song(link)
+            downloaded_file = await download_song(link, media_type="audio")
             if not downloaded_file:
-                # Fallback to cookies method if APIs fail
+                # Fallback to cookies method if hardcoded API fails
+                print("Using cookies fallback for audio download")
                 downloaded_file = await loop.run_in_executor(None, audio_dl)
         return downloaded_file, direct
