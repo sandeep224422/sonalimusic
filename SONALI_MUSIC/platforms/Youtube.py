@@ -3,6 +3,7 @@ import os
 import re
 import json
 from typing import Union
+from urllib.parse import quote_plus
 import requests
 import yt_dlp
 from pyrogram.enums import MessageEntityType
@@ -42,7 +43,212 @@ def cookie_txt_file():
         return None
 
 
+async def search_and_get_audio(query: str):
+    """Search for audio using /api/song?query= endpoint"""
+    try:
+        encoded_query = quote_plus(query)
+        search_url = f"{HEROKU_API_BASE}/api/song?query={encoded_query}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == 'ok' and data.get('type') == 'audio' and data.get('link'):
+                        return data
+                return None
+    except Exception as e:
+        print(f"Error searching audio: {e}")
+        return None
+
+
+async def search_and_get_video(query: str):
+    """Search for video using /api/video?query= endpoint"""
+    try:
+        encoded_query = quote_plus(query)
+        search_url = f"{HEROKU_API_BASE}/api/video?query={encoded_query}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == 'ok' and data.get('type') == 'video' and data.get('link'):
+                        return data
+                return None
+    except Exception as e:
+        print(f"Error searching video: {e}")
+        return None
+
+
+async def check_job_status(job_id: str):
+    """Check background job status using /api/status?id= endpoint"""
+    try:
+        status_url = f"{HEROKU_API_BASE}/api/status?id={job_id}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(status_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data
+                return None
+    except Exception as e:
+        print(f"Error checking job status: {e}")
+        return None
+
+
+async def download_from_api_link(link: str, video_id: str, media_type: str = "audio"):
+    """Download file from API-provided direct link"""
+    download_folder = "downloads"
+    os.makedirs(download_folder, exist_ok=True)
+    
+    if media_type == "video":
+        default_ext = "mp4"
+        preferred_exts = ["mp4", "mkv", "webm"]
+    else:
+        default_ext = "mp3"
+        preferred_exts = ["mp3", "m4a", "webm"]
+    
+    # Check if file already exists
+    for ext in preferred_exts:
+        file_path = os.path.join(download_folder, f"{video_id}.{ext}")
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            print(f"File already exists: {file_path}")
+            return file_path
+    
+    timeout = aiohttp.ClientTimeout(total=300, connect=30)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            headers = {
+                'User-Agent': 'python-aiohttp/1.0',
+                'Accept': 'audio/*, video/*, */*'
+            }
+            
+            print(f"🔗 Downloading from API link: {link}")
+            
+            async with session.get(link, headers=headers, allow_redirects=True) as response:
+                if response.status == 200:
+                    content_type = response.headers.get('Content-Type', '')
+                    print(f"📦 Content-Type: {content_type}")
+                    
+                    file_extension = default_ext
+                    if 'video' in content_type:
+                        file_extension = "mp4"
+                    elif 'audio' in content_type:
+                        if 'mpeg' in content_type or 'mp3' in content_type:
+                            file_extension = "mp3"
+                        elif 'm4a' in content_type:
+                            file_extension = "m4a"
+                    
+                    file_name = f"{video_id}.{file_extension}"
+                    file_path = os.path.join(download_folder, file_name)
+                    
+                    print(f"💾 Downloading to: {file_path}")
+                    
+                    try:
+                        total_size = 0
+                        with open(file_path, 'wb') as f:
+                            async for chunk in response.content.iter_chunked(8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    total_size += len(chunk)
+                        
+                        print(f"✅ Downloaded {total_size} bytes")
+                        
+                        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                            print(f"✅ File verified: {file_path} ({os.path.getsize(file_path)} bytes)")
+                            return file_path
+                        else:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                            print(f"❌ Downloaded file is empty: {file_path}")
+                    except Exception as e:
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                            except:
+                                pass
+                        print(f"❌ Error writing file {file_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    error_text = await response.text()
+                    print(f"❌ Download failed with status: {response.status}")
+                    print(f"Response: {error_text[:200]}")
+        except Exception as e:
+            print(f"❌ Error downloading from API link: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    return None
+
+
 async def download_song(link: str, media_type: str = "audio"):
+    # Check if link is a search query (not a URL or video ID)
+    is_search_query = False
+    if not any([
+        'youtube.com' in link or 'youtu.be' in link,
+        len(link) == 11 and link.replace('-', '').replace('_', '').isalnum(),
+        re.search(r'(?:v=|/)([0-9A-Za-z_-]{11})', link)
+    ]):
+        # This looks like a search query, try search API first
+        is_search_query = True
+        print(f"🔍 Detected search query: {link}")
+        
+        if media_type == "video":
+            api_result = await search_and_get_video(link)
+        else:
+            api_result = await search_and_get_audio(link)
+        
+        if api_result and api_result.get('link'):
+            # Extract video ID from API result or generate one
+            video_id = api_result.get('videoId') or api_result.get('id')
+            if not video_id:
+                # Try to extract from link or generate from title
+                if 'videoId' in api_result.get('link', ''):
+                    match = re.search(r'videoId=([a-zA-Z0-9_-]{11})', api_result.get('link', ''))
+                    if match:
+                        video_id = match.group(1)
+                if not video_id:
+                    # Generate a simple ID from query
+                    video_id = link[:11].replace(' ', '_').replace('-', '_')
+            
+            # Check if status is processing (background job)
+            if api_result.get('status') == 'processing' and api_result.get('jobId'):
+                job_id = api_result.get('jobId')
+                print(f"⏳ Job is processing, job ID: {job_id}")
+                # Poll for job completion
+                max_attempts = 30
+                for attempt in range(max_attempts):
+                    await asyncio.sleep(2)  # Wait 2 seconds between checks
+                    status_data = await check_job_status(job_id)
+                    if status_data and status_data.get('status') == 'ok':
+                        # Job completed, get the result again
+                        if media_type == "video":
+                            api_result = await search_and_get_video(link)
+                        else:
+                            api_result = await search_and_get_audio(link)
+                        if api_result and api_result.get('link'):
+                            break
+                    elif status_data and status_data.get('status') == 'error':
+                        print(f"❌ Job failed: {status_data.get('message', 'Unknown error')}")
+                        break
+                    elif status_data and status_data.get('status') == 'processing':
+                        print(f"⏳ Still processing... ({attempt + 1}/{max_attempts})")
+            
+            # Download from the direct link
+            if api_result and api_result.get('link'):
+                downloaded_file = await download_from_api_link(
+                    api_result.get('link'), 
+                    video_id, 
+                    media_type
+                )
+                if downloaded_file:
+                    return downloaded_file
+        
+        # If search API failed, continue with normal flow (might be a video ID after all)
+        if not api_result:
+            print("⚠️ Search API failed, trying normal video ID extraction")
+    
     # Extract video ID from various YouTube URL formats
     video_id = None
     if 'v=' in link:
