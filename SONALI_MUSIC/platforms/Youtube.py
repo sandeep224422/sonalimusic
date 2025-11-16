@@ -22,10 +22,10 @@ import aiohttp
 HEROKU_API_BASE = "https://yt-apizefron-9930f07c38ef.herokuapp.com"
 NEW_API_URL = "https://apikeyy-zeta.vercel.app/api"
 
-# Initialize your PyTgCalls instance here (uncomment and configure)
+# PyTgCalls Configuration (Uncomment and configure)
 # from pytgcalls import PyTgCalls
 # from pytgcalls.types import AudioPiped, VideoPiped, HighQualityAudio, HighQualityVideo
-# pytgcalls = PyTgCalls(your_client)
+# pytgcalls = PyTgCalls(your_client)  # Replace 'your_client' with your actual Pyrogram client
 # pytgcalls.start()
 
 
@@ -236,22 +236,6 @@ async def play_from_api(query: str, message):
             thumb = api_result.get('thumb', '')
             source = api_result.get('source', 'unknown')
             
-            # Format duration for display
-            duration_text = ""
-            if duration:
-                minutes = int(duration // 60)
-                seconds = int(duration % 60)
-                duration_text = f"{minutes}:{seconds:02d}"
-            
-            # Notify user
-            status_msg_text = f"🎵 **Playing:** {title}\n"
-            if duration_text:
-                status_msg_text += f"⏱ **Duration:** {duration_text}\n"
-            status_msg_text += f"📡 **Source:** {source}\n"
-            status_msg_text += f"🔗 Streaming from API..."
-            
-            await message.reply_text(status_msg_text)
-            
             # Return the URL to your player (PyTgCalls or whatever you use)
             return {
                 'url': audio_url,  # Stream this URL directly!
@@ -316,24 +300,6 @@ async def play_video_from_api(query: str, message):
             thumb = api_result.get('thumb', '')
             resolution = api_result.get('resolution', '')
             source = api_result.get('source', 'unknown')
-            
-            # Format duration for display
-            duration_text = ""
-            if duration:
-                minutes = int(duration // 60)
-                seconds = int(duration % 60)
-                duration_text = f"{minutes}:{seconds:02d}"
-            
-            # Notify user
-            status_msg_text = f"🎬 **Playing:** {title}\n"
-            if duration_text:
-                status_msg_text += f"⏱ **Duration:** {duration_text}\n"
-            if resolution:
-                status_msg_text += f"📺 **Resolution:** {resolution}\n"
-            status_msg_text += f"📡 **Source:** {source}\n"
-            status_msg_text += f"🔗 Streaming from API..."
-            
-            await message.reply_text(status_msg_text)
             
             # Return the URL to your player
             return {
@@ -1156,156 +1122,194 @@ class YouTubeAPI:
             raise FileNotFoundError(f"Failed to download audio for {link}")
 
 
-# ============================================
-# PLAY COMMAND HANDLERS (NEW - STREAMING)
-# ============================================
+# ==================== COMMAND HANDLERS ====================
 
-@app.on_message(filters.command("play"))
-async def play_command(client: Client, message: Message):
-    """Play audio directly from API without downloading"""
+@Client.on_message(filters.command(["play", "p"]) & filters.group)
+async def play_command_handler(client: Client, message: Message):
+    """Handler for /play command - uses API to stream songs"""
     try:
-        # Check if user provided query
+        # Get query from command
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ **Usage:** `/play <song name>`\n\n"
-                "**Examples:**\n"
-                "• `/play tu hai kahan`\n"
-                "• `/play shape of you`\n"
-                "• `/play https://youtube.com/watch?v=...`"
+                "❌ **Usage:** `/play song name`\n"
+                "**Example:** `/play tu hai kahan`"
             )
         
         query = " ".join(message.command[1:])
         
-        # Check if user is in a voice chat
-        if message.chat.type not in ["group", "supergroup"]:
-            return await message.reply_text("❌ This command only works in groups!")
-        
-        processing_msg = await message.reply_text(f"🔍 Searching for: **{query}**...")
+        # Show processing message
+        status_msg = await message.reply_text(f"🔍 Searching for: **{query}**...")
         
         try:
-            # Use play_from_api (NEW WAY - NO DOWNLOAD!)
-            result = await play_from_api(query, processing_msg)
+            # Use the API to get the song
+            result = await play_from_api(query, message)
             
             if result and result.get('url'):
-                # Stream directly using PyTgCalls
+                # Delete the searching message
                 try:
-                    # Uncomment and configure your PyTgCalls instance
-                    # await pytgcalls.join_group_call(
-                    #     message.chat.id,
-                    #     AudioPiped(
-                    #         result['url'],  # Direct streaming URL
-                    #         audio_parameters=HighQualityAudio()
-                    #     )
-                    # )
-                    
-                    # For now, just show the URL (replace with your player code)
-                    duration_text = ""
-                    if result.get('duration'):
-                        minutes = int(result['duration'] // 60)
-                        seconds = int(result['duration'] % 60)
-                        duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
-                    
-                    success_msg = (
-                        f"✅ **Now Playing**\n\n"
-                        f"🎵 **{result['title']}**\n"
-                        f"{duration_text}"
-                        f"📡 **Source:** {result.get('source', 'API')}\n"
-                        f"🔗 **Streaming URL:** `{result['url']}`\n\n"
-                        f"💡 **Note:** Configure PyTgCalls to use this URL"
-                    )
-                    
-                    await processing_msg.edit_text(success_msg)
-                    
-                except Exception as stream_error:
-                    # If streaming fails, show the URL so user can try manually
-                    await processing_msg.edit_text(
-                        f"⚠️ **Streaming Error**\n\n"
-                        f"**Title:** {result['title']}\n"
-                        f"**URL:** `{result['url']}`\n\n"
-                        f"Error: {str(stream_error)}"
-                    )
-                    print(f"Player error: {stream_error}")
-            else:
-                await processing_msg.edit_text("❌ Could not get audio from API")
+                    await status_msg.delete()
+                except:
+                    pass
                 
-        except Exception as api_error:
-            # Fallback to old download method if API fails
-            await processing_msg.edit_text(
-                f"⚠️ API streaming failed, trying download method...\n"
-                f"Error: {str(api_error)}"
-            )
-            
-            # Fallback to download (if you still want this)
-            try:
-                file_path = await download_song(query, "audio")
-                if file_path:
-                    # Use downloaded file
-                    # await pytgcalls.join_group_call(
-                    #     message.chat.id,
-                    #     AudioPiped(file_path)
-                    # )
-                    await processing_msg.edit_text(
-                        f"✅ Playing from downloaded file\n"
-                        f"**Path:** `{file_path}`"
-                    )
-            except Exception as download_error:
-                await processing_msg.edit_text(
-                    f"❌ All methods failed\n"
-                    f"API Error: {str(api_error)}\n"
-                    f"Download Error: {str(download_error)}"
+                # Stream the song URL directly to voice chat
+                audio_url = result['url']
+                title = result['title']
+                thumb = result.get('thumb', '')
+                duration = result.get('duration', 0)
+                
+                # PyTgCalls Integration (Uncomment and configure)
+                # try:
+                #     await pytgcalls.join_group_call(
+                #         message.chat.id,
+                #         AudioPiped(
+                #             audio_url,  # Direct streaming URL!
+                #             audio_parameters=HighQualityAudio()
+                #         )
+                #     )
+                #     
+                #     # Success message
+                #     duration_text = ""
+                #     if duration:
+                #         minutes = int(duration // 60)
+                #         seconds = int(duration % 60)
+                #         duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
+                #     
+                #     await message.reply_text(
+                #         f"✅ **Now Playing**\n\n"
+                #         f"🎵 **{title}**\n"
+                #         f"{duration_text}"
+                #         f"📡 **Source:** {result.get('source', 'API')}\n"
+                #         f"🔗 Streaming from API"
+                #     )
+                # except Exception as stream_error:
+                #     await message.reply_text(
+                #         f"⚠️ **Streaming Error**\n\n"
+                #         f"**Title:** {title}\n"
+                #         f"**URL:** `{audio_url}`\n\n"
+                #         f"Error: {str(stream_error)}"
+                #     )
+                
+                # For now, just return the info (remove this when PyTgCalls is configured)
+                duration_text = ""
+                if duration:
+                    minutes = int(duration // 60)
+                    seconds = int(duration % 60)
+                    duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
+                
+                await message.reply_text(
+                    f"✅ **Ready to Play:**\n\n"
+                    f"🎵 **{title}**\n"
+                    f"{duration_text}"
+                    f"📡 **Source:** {result.get('source', 'API')}\n"
+                    f"🔗 **URL:** `{audio_url}`\n\n"
+                    f"💡 **Note:** Uncomment PyTgCalls code above to actually stream!"
                 )
+            else:
+                await status_msg.edit_text("❌ Could not get song from API")
                 
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Error: {str(e)}")
+            print(f"Play command error: {e}")
+            import traceback
+            traceback.print_exc()
+            
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
-        print(f"Play command error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Command handler error: {e}")
 
 
-@app.on_message(filters.command("playvideo"))
-async def play_video_command(client: Client, message: Message):
-    """Play video directly from API without downloading"""
+@Client.on_message(filters.command(["vplay", "video"]) & filters.group)
+async def vplay_command_handler(client: Client, message: Message):
+    """Handler for /vplay command - uses API to stream videos"""
     try:
+        # Get query from command
         if len(message.command) < 2:
-            return await message.reply_text("❌ Please provide a video name!")
+            return await message.reply_text(
+                "❌ **Usage:** `/vplay video name`\n"
+                "**Example:** `/vplay hanuman chalisa`"
+            )
         
         query = " ".join(message.command[1:])
-        processing_msg = await message.reply_text(f"🔍 Searching: **{query}**...")
         
-        # Use play_video_from_api for videos
-        result = await play_video_from_api(query, processing_msg)
+        # Show processing message
+        status_msg = await message.reply_text(f"🔍 Searching for: **{query}**...")
         
-        if result and result.get('url'):
-            # Stream video to voice chat
-            # Uncomment and configure your PyTgCalls instance
-            # await pytgcalls.join_group_call(
-            #     message.chat.id,
-            #     VideoPiped(
-            #         result['url'],
-            #         audio_parameters=HighQualityAudio(),
-            #         video_parameters=HighQualityVideo()
-            #     )
-            # )
+        try:
+            # Use the API to get the video
+            result = await play_video_from_api(query, message)
             
-            duration_text = ""
-            if result.get('duration'):
-                minutes = int(result['duration'] // 60)
-                seconds = int(result['duration'] % 60)
-                duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
-            
-            await processing_msg.edit_text(
-                f"✅ **Now Playing Video**\n\n"
-                f"🎬 **{result['title']}**\n"
-                f"{duration_text}"
-                f"📺 **Resolution:** {result.get('resolution', 'Unknown')}\n"
-                f"🔗 **Streaming URL:** `{result['url']}`\n\n"
-                f"💡 **Note:** Configure PyTgCalls to use this URL"
-            )
-        else:
-            await processing_msg.edit_text("❌ Could not get video from API")
+            if result and result.get('url'):
+                # Delete the searching message
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
+                
+                # Stream the video URL directly to voice chat
+                video_url = result['url']
+                title = result['title']
+                thumb = result.get('thumb', '')
+                resolution = result.get('resolution', '')
+                
+                # PyTgCalls Integration for Video (Uncomment and configure)
+                # try:
+                #     await pytgcalls.join_group_call(
+                #         message.chat.id,
+                #         VideoPiped(
+                #             video_url,  # Direct streaming URL!
+                #             audio_parameters=HighQualityAudio(),
+                #             video_parameters=HighQualityVideo()
+                #         )
+                #     )
+                #     
+                #     # Success message
+                #     duration_text = ""
+                #     if result.get('duration'):
+                #         minutes = int(result['duration'] // 60)
+                #         seconds = int(result['duration'] % 60)
+                #         duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
+                #     
+                #     await message.reply_text(
+                #         f"✅ **Now Playing Video**\n\n"
+                #         f"🎬 **{title}**\n"
+                #         f"{duration_text}"
+                #         f"📺 **Resolution:** {resolution}\n"
+                #         f"📡 **Source:** {result.get('source', 'API')}\n"
+                #         f"🔗 Streaming from API"
+                #     )
+                # except Exception as stream_error:
+                #     await message.reply_text(
+                #         f"⚠️ **Streaming Error**\n\n"
+                #         f"**Title:** {title}\n"
+                #         f"**URL:** `{video_url}`\n\n"
+                #         f"Error: {str(stream_error)}"
+                #     )
+                
+                # For now, just return the info (remove this when PyTgCalls is configured)
+                duration_text = ""
+                if result.get('duration'):
+                    minutes = int(result['duration'] // 60)
+                    seconds = int(result['duration'] % 60)
+                    duration_text = f"⏱ **Duration:** {minutes}:{seconds:02d}\n"
+                
+                await message.reply_text(
+                    f"✅ **Ready to Play Video:**\n\n"
+                    f"📹 **{title}**\n"
+                    f"{duration_text}"
+                    f"📺 **Resolution:** {resolution}\n"
+                    f"📡 **Source:** {result.get('source', 'API')}\n"
+                    f"🔗 **URL:** `{video_url}`\n\n"
+                    f"💡 **Note:** Uncomment PyTgCalls code above to actually stream!"
+                )
+            else:
+                await status_msg.edit_text("❌ Could not get video from API")
+                
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Error: {str(e)}")
+            print(f"VPlay command error: {e}")
+            import traceback
+            traceback.print_exc()
             
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
-        print(f"Play video command error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Command handler error: {e}")
