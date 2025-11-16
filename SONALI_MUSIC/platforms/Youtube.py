@@ -182,6 +182,170 @@ async def download_from_api_link(link: str, video_id: str, media_type: str = "au
     return None
 
 
+async def play_from_api(query: str, message):
+    """Play audio directly from API without downloading"""
+    try:
+        # Get the song info from API
+        api_result = await search_and_get_audio(query)
+        
+        if not api_result:
+            raise Exception("Could not get audio from API - no result returned")
+        
+        # Check if status is processing (background job)
+        if api_result.get('status') == 'processing' and api_result.get('jobId'):
+            job_id = api_result.get('jobId')
+            status_msg = await message.reply_text(f"⏳ Processing audio, please wait...")
+            
+            # Poll for job completion
+            max_attempts = 30
+            for attempt in range(max_attempts):
+                await asyncio.sleep(2)  # Wait 2 seconds between checks
+                status_data = await check_job_status(job_id)
+                
+                if status_data and status_data.get('status') == 'ok':
+                    # Job completed, get the result again
+                    api_result = await search_and_get_audio(query)
+                    if api_result and api_result.get('link'):
+                        break
+                elif status_data and status_data.get('status') == 'error':
+                    raise Exception(f"Job failed: {status_data.get('message', 'Unknown error')}")
+                elif status_data and status_data.get('status') == 'processing':
+                    progress = status_data.get('progress', 'Processing...')
+                    if attempt % 5 == 0:  # Update message every 5 attempts (10 seconds)
+                        try:
+                            await status_msg.edit_text(f"⏳ {progress} ({attempt + 1}/{max_attempts})")
+                        except:
+                            pass
+            
+            # Final check
+            if not api_result or not api_result.get('link'):
+                raise Exception("Job processing timeout or failed")
+        
+        if api_result and api_result.get('link'):
+            # Use the link DIRECTLY - no download needed!
+            audio_url = api_result['link']
+            title = api_result.get('title', 'Unknown')
+            duration = api_result.get('duration', 0)
+            thumb = api_result.get('thumb', '')
+            source = api_result.get('source', 'unknown')
+            
+            # Format duration for display
+            duration_text = ""
+            if duration:
+                minutes = int(duration // 60)
+                seconds = int(duration % 60)
+                duration_text = f"{minutes}:{seconds:02d}"
+            
+            # Notify user
+            status_msg_text = f"🎵 **Playing:** {title}\n"
+            if duration_text:
+                status_msg_text += f"⏱ **Duration:** {duration_text}\n"
+            status_msg_text += f"📡 **Source:** {source}\n"
+            status_msg_text += f"🔗 Streaming from API..."
+            
+            await message.reply_text(status_msg_text)
+            
+            # Return the URL to your player (PyTgCalls or whatever you use)
+            return {
+                'url': audio_url,  # Stream this URL directly!
+                'title': title,
+                'duration': duration,
+                'thumb': thumb,
+                'source': source
+            }
+        else:
+            raise Exception("Could not get audio link from API")
+            
+    except Exception as e:
+        error_msg = f"❌ Error getting audio from API: {str(e)}"
+        await message.reply_text(error_msg)
+        raise
+
+
+async def play_video_from_api(query: str, message):
+    """Play video directly from API without downloading"""
+    try:
+        # Get the video info from API
+        api_result = await search_and_get_video(query)
+        
+        if not api_result:
+            raise Exception("Could not get video from API - no result returned")
+        
+        # Check if status is processing (background job)
+        if api_result.get('status') == 'processing' and api_result.get('jobId'):
+            job_id = api_result.get('jobId')
+            status_msg = await message.reply_text(f"⏳ Processing video, please wait...")
+            
+            # Poll for job completion
+            max_attempts = 30
+            for attempt in range(max_attempts):
+                await asyncio.sleep(2)  # Wait 2 seconds between checks
+                status_data = await check_job_status(job_id)
+                
+                if status_data and status_data.get('status') == 'ok':
+                    # Job completed, get the result again
+                    api_result = await search_and_get_video(query)
+                    if api_result and api_result.get('link'):
+                        break
+                elif status_data and status_data.get('status') == 'error':
+                    raise Exception(f"Job failed: {status_data.get('message', 'Unknown error')}")
+                elif status_data and status_data.get('status') == 'processing':
+                    progress = status_data.get('progress', 'Processing...')
+                    if attempt % 5 == 0:  # Update message every 5 attempts (10 seconds)
+                        try:
+                            await status_msg.edit_text(f"⏳ {progress} ({attempt + 1}/{max_attempts})")
+                        except:
+                            pass
+            
+            # Final check
+            if not api_result or not api_result.get('link'):
+                raise Exception("Job processing timeout or failed")
+        
+        if api_result and api_result.get('link'):
+            # Use the link DIRECTLY - no download needed!
+            video_url = api_result['link']
+            title = api_result.get('title', 'Unknown')
+            duration = api_result.get('duration', 0)
+            thumb = api_result.get('thumb', '')
+            resolution = api_result.get('resolution', '')
+            source = api_result.get('source', 'unknown')
+            
+            # Format duration for display
+            duration_text = ""
+            if duration:
+                minutes = int(duration // 60)
+                seconds = int(duration % 60)
+                duration_text = f"{minutes}:{seconds:02d}"
+            
+            # Notify user
+            status_msg_text = f"🎬 **Playing:** {title}\n"
+            if duration_text:
+                status_msg_text += f"⏱ **Duration:** {duration_text}\n"
+            if resolution:
+                status_msg_text += f"📺 **Resolution:** {resolution}\n"
+            status_msg_text += f"📡 **Source:** {source}\n"
+            status_msg_text += f"🔗 Streaming from API..."
+            
+            await message.reply_text(status_msg_text)
+            
+            # Return the URL to your player
+            return {
+                'url': video_url,  # Stream this URL directly!
+                'title': title,
+                'duration': duration,
+                'thumb': thumb,
+                'resolution': resolution,
+                'source': source
+            }
+        else:
+            raise Exception("Could not get video link from API")
+            
+    except Exception as e:
+        error_msg = f"❌ Error getting video from API: {str(e)}"
+        await message.reply_text(error_msg)
+        raise
+
+
 async def download_song(link: str, media_type: str = "audio"):
     # Check if link is a search query (not a URL or video ID)
     is_search_query = False
