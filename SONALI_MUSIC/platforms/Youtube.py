@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 COMPLETE WORKING YOUTUBE.PY - Ready to use with PyTgCalls
 For: https://github.com/sandeep224422/sonalimusic
@@ -50,62 +51,74 @@ API_TIMEOUT = 180  # 3 minutes for API to download + upload
 # CORE API FUNCTIONS
 # ============================================================================
 
-async def search_and_get_audio(query: str):
-    """Search for audio using Heroku API /api/song endpoint"""
+async def fetch_song_entry(query: str):
+    """Call /song?query=... and normalize stream URLs."""
+    encoded_query = quote_plus(query)
+    url = f"{HEROKU_API_BASE}/song?query={encoded_query}"
+    print(f"🔍 [API] Fetching /song entry for: {query}")
+
     try:
-        encoded_query = quote_plus(query)
-        search_url = f"{HEROKU_API_BASE}/api/song?query={encoded_query}"
-        
-        print(f"🔍 [API] Searching audio: {query}")
-        
         async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('status') == 'ok' and data.get('type') == 'audio' and data.get('link'):
-                        print(f"✅ [API] Audio found! Source: {data.get('source', 'unknown')}")
-                        return data
-                    else:
-                        print(f"⚠️ [API] Invalid response: {data.get('status')}")
-                        return None
-                else:
-                    print(f"❌ [API] Error {response.status}")
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as response:
+                if response.status != 200:
+                    print(f"❌ [API] /song error {response.status}")
                     return None
+
+                data = await response.json()
+                if not data.get("success"):
+                    print(f"⚠️ [API] /song returned: {data}")
+                    return None
+
+                video_id = data.get("videoId")
+                if not video_id:
+                    return None
+
+                # Normalize URLs to Heroku host in case API returns localhost
+                data["link"] = f"{HEROKU_API_BASE}/audio/{video_id}"
+                data["videoLink"] = f"{HEROKU_API_BASE}/video/{video_id}"
+                data["playLink"] = f"{HEROKU_API_BASE}/play/{video_id}"
+                return data
+
     except asyncio.TimeoutError:
-        print(f"❌ [API] Timeout after {API_TIMEOUT}s")
-        return None
-    except Exception as e:
-        print(f"❌ [API] Error: {e}")
-        return None
+        print(f"❌ [API] /song timeout after {API_TIMEOUT}s")
+    except Exception as exc:
+        print(f"❌ [API] /song failed: {exc}")
+    return None
 
 
-async def search_and_get_video(query: str):
-    """Search for video using Heroku API /api/video endpoint"""
+async def fetch_info(video_id: str):
+    """Optional: fetch metadata via /info/:videoId."""
+    url = f"{HEROKU_API_BASE}/info/{video_id}"
     try:
-        encoded_query = quote_plus(query)
-        search_url = f"{HEROKU_API_BASE}/api/video?query={encoded_query}"
-        
-        print(f"🔍 [API] Searching video: {query}")
-        
         async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    if data.get('status') == 'ok' and data.get('type') == 'video' and data.get('link'):
-                        print(f"✅ [API] Video found! Source: {data.get('source', 'unknown')}")
-                        return data
-                    else:
-                        print(f"⚠️ [API] Invalid response: {data.get('status')}")
-                        return None
-                else:
-                    print(f"❌ [API] Error {response.status}")
-                    return None
-    except asyncio.TimeoutError:
-        print(f"❌ [API] Timeout after {API_TIMEOUT}s")
-        return None
-    except Exception as e:
-        print(f"❌ [API] Error: {e}")
-        return None
+                    return await response.json()
+    except Exception as exc:
+        print(f"⚠️ [API] /info error: {exc}")
+    return None
+
+
+async def enrich_entry(entry: dict):
+    """Ensure title/duration/thumb exist using /info when needed."""
+    if entry.get("title") and entry.get("duration") and entry.get("thumb"):
+        return entry
+
+    video_id = entry.get("videoId")
+    if not video_id:
+        return entry
+
+    info = await fetch_info(video_id)
+    if not info:
+        return entry
+
+    entry.setdefault("title", info.get("title"))
+    entry.setdefault("duration", info.get("duration"))
+    thumb = info.get("thumbnail") or info.get("thumb")
+    if thumb:
+        entry.setdefault("thumb", thumb)
+
+    return entry
 
 
 # ============================================================================
@@ -113,16 +126,16 @@ async def search_and_get_video(query: str):
 # ============================================================================
 
 def cookie_txt_file():
-    """Get random cookie file for yt-dlp fallback"""
+    """Get random cookie file for yt-dlp fallback."""
     try:
         cookie_dir = f"{os.getcwd()}/cookies"
         if not os.path.exists(cookie_dir):
             return None
-        
+
         cookies_files = [f for f in os.listdir(cookie_dir) if f.endswith(".txt")]
         if not cookies_files:
             return None
-        
+
         cookie_file = os.path.join(cookie_dir, random.choice(cookies_files))
         return cookie_file if os.path.exists(cookie_file) else None
     except Exception:
@@ -130,44 +143,42 @@ def cookie_txt_file():
 
 
 async def fallback_ytdlp_download(query: str, video_only: bool = False):
-    """Fallback: Download using yt-dlp if API fails"""
+    """Fallback: Download using yt-dlp if API fails."""
     try:
         print(f"🔄 [FALLBACK] Using yt-dlp for: {query}")
-        
-        # Search YouTube
+
         results = VideosSearch(query, limit=1)
         result = await results.next()
-        
+
         if not result.get('result'):
             return None
-        
+
         video = result['result'][0]
         video_url = video['link']
         video_id = video['id']
-        
-        # Download with yt-dlp
+
         download_folder = "downloads"
         os.makedirs(download_folder, exist_ok=True)
-        
+
         ydl_opts = {
             'format': 'bestvideo+bestaudio/best' if video_only else 'bestaudio/best',
             'outtmpl': f'{download_folder}/{video_id}.%(ext)s',
             'quiet': True,
             'no_warnings': True,
         }
-        
+
         cookie_file = cookie_txt_file()
         if cookie_file:
             ydl_opts['cookiefile'] = cookie_file
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             filename = ydl.prepare_filename(info)
-            
+
             print(f"✅ [FALLBACK] Downloaded to: {filename}")
-            
+
             return {
-                'file_path': filename,  # Local file for fallback
+                'file_path': filename,
                 'title': info.get('title', 'Unknown'),
                 'duration': info.get('duration', 0),
                 'thumb': info.get('thumbnail', ''),
@@ -184,126 +195,88 @@ async def fallback_ytdlp_download(query: str, video_only: bool = False):
 
 async def YoutubeDownload(query: str, message=None):
     """
-    Main function for audio download/streaming
-    
+    Main function for audio download/streaming.
+
     Returns:
         dict with either:
-        - 'url': Direct Telegram URL for streaming (API success)
+        - 'url': Direct stream URL (API success)
         - 'file_path': Local file path (fallback)
-        Plus: 'title', 'duration', 'thumb', 'source'
-    
-    Raises:
-        Exception if all methods fail
+        plus 'title', 'duration', 'thumb', 'source'
     """
-    print(f"\n{'='*60}")
-    print(f"🎵 YOUTUBE AUDIO REQUEST: {query}")
-    print(f"{'='*60}\n")
-    
-    # TRY 1: Use Heroku API (fast, cached, no download needed)
-    try:
-        api_result = await search_and_get_audio(query)
-        
-        if api_result and api_result.get('link'):
-            result = {
-                'url': api_result['link'],  # Direct streaming URL!
-                'title': api_result.get('title', 'Unknown'),
-                'duration': api_result.get('duration', 0),
-                'thumb': api_result.get('thumb', ''),
-                'source': api_result.get('source', 'api'),
-                'videoId': api_result.get('jobId', 'unknown')
-            }
-            
-            print(f"✅ SUCCESS via API!")
-            print(f"   URL: {result['url'][:50]}...")
-            print(f"   Title: {result['title']}")
-            print(f"   Duration: {result['duration']}s")
-            
-            return result
-    except Exception as e:
-        print(f"⚠️ API failed: {e}")
-    
-    # TRY 2: Fallback to yt-dlp (downloads local file)
-    try:
-        fallback_result = await fallback_ytdlp_download(query, video_only=False)
-        
-        if fallback_result:
-            print(f"✅ SUCCESS via yt-dlp fallback!")
-            return fallback_result
-    except Exception as e:
-        print(f"⚠️ Fallback failed: {e}")
-    
-    # FAILED: No method worked
-    error_msg = "❌ Could not get audio from any source (API + fallback failed)"
+    print(f"\n{'='*60}\n🎵 YOUTUBE AUDIO REQUEST: {query}\n{'='*60}\n")
+
+    api_result = await fetch_song_entry(query)
+    if api_result and api_result.get("link"):
+        api_result = await enrich_entry(api_result)
+        result = {
+            'url': api_result['link'],
+            'title': api_result.get('title', 'Unknown'),
+            'duration': api_result.get('duration', 0),
+            'thumb': api_result.get('thumb', ''),
+            'source': 'heroku_api',
+            'videoId': api_result.get('videoId')
+        }
+
+        print("✅ SUCCESS via Heroku API (audio)")
+        print(f"   URL: {result['url'][:60]}...")
+        print(f"   Title: {result['title']}")
+        print(f"   Duration: {result['duration']}s")
+        return result
+
+    fallback_result = await fallback_ytdlp_download(query, video_only=False)
+    if fallback_result:
+        print("✅ SUCCESS via yt-dlp fallback (audio)")
+        return fallback_result
+
+    error_msg = "❌ Could not get audio from API or fallback"
     print(error_msg)
     if message:
-        try:
-            await message.reply_text(error_msg)
-        except:
-            pass
+        await message.reply_text(error_msg)
     raise Exception(error_msg)
 
 
 async def YoutubeVideDownload(query: str, message=None):
     """
-    Main function for video download/streaming
-    
+    Main function for video download/streaming.
+
     Returns:
         dict with either:
-        - 'url': Direct Telegram URL for streaming (API success)
+        - 'url': Direct stream URL (API success)
         - 'file_path': Local file path (fallback)
-        Plus: 'title', 'duration', 'thumb', 'source', 'resolution'
-    
-    Raises:
-        Exception if all methods fail
+        plus 'title', 'duration', 'thumb', 'source', 'resolution'
     """
-    print(f"\n{'='*60}")
-    print(f"🎬 YOUTUBE VIDEO REQUEST: {query}")
-    print(f"{'='*60}\n")
-    
-    # TRY 1: Use Heroku API (fast, cached, no download needed)
-    try:
-        api_result = await search_and_get_video(query)
-        
-        if api_result and api_result.get('link'):
-            result = {
-                'url': api_result['link'],  # Direct streaming URL!
-                'title': api_result.get('title', 'Unknown'),
-                'duration': api_result.get('duration', 0),
-                'thumb': api_result.get('thumb', ''),
-                'source': api_result.get('source', 'api'),
-                'resolution': api_result.get('resolution', 'N/A'),
-                'videoId': api_result.get('jobId', 'unknown')
-            }
-            
-            print(f"✅ SUCCESS via API!")
-            print(f"   URL: {result['url'][:50]}...")
-            print(f"   Title: {result['title']}")
-            print(f"   Duration: {result['duration']}s")
-            print(f"   Resolution: {result['resolution']}")
-            
-            return result
-    except Exception as e:
-        print(f"⚠️ API failed: {e}")
-    
-    # TRY 2: Fallback to yt-dlp (downloads local file)
-    try:
-        fallback_result = await fallback_ytdlp_download(query, video_only=True)
-        
-        if fallback_result:
-            fallback_result['resolution'] = 'N/A'
-            print(f"✅ SUCCESS via yt-dlp fallback!")
-            return fallback_result
-    except Exception as e:
-        print(f"⚠️ Fallback failed: {e}")
-    
-    # FAILED: No method worked
-    error_msg = "❌ Could not get video from any source (API + fallback failed)"
+    print(f"\n{'='*60}\n🎬 YOUTUBE VIDEO REQUEST: {query}\n{'='*60}\n")
+
+    api_result = await fetch_song_entry(query)
+    if api_result and api_result.get("videoLink"):
+        api_result = await enrich_entry(api_result)
+        result = {
+            'url': api_result['videoLink'],
+            'title': api_result.get('title', 'Unknown'),
+            'duration': api_result.get('duration', 0),
+            'thumb': api_result.get('thumb', ''),
+            'source': 'heroku_api',
+            'resolution': api_result.get('resolution', 'auto'),
+            'videoId': api_result.get('videoId')
+        }
+
+        print("✅ SUCCESS via Heroku API (video)")
+        print(f"   URL: {result['url'][:60]}...")
+        print(f"   Title: {result['title']}")
+        print(f"   Duration: {result['duration']}s")
+        print(f"   Resolution: {result['resolution']}")
+        return result
+
+    fallback_result = await fallback_ytdlp_download(query, video_only=True)
+    if fallback_result:
+        fallback_result['resolution'] = fallback_result.get('resolution', 'N/A')
+        print("✅ SUCCESS via yt-dlp fallback (video)")
+        return fallback_result
+
+    error_msg = "❌ Could not get video from API or fallback"
     print(error_msg)
     if message:
-        try:
-            await message.reply_text(error_msg)
-        except:
-            pass
+        await message.reply_text(error_msg)
     raise Exception(error_msg)
 
 
@@ -322,29 +295,19 @@ from pytgcalls.types import AudioPiped, VideoPiped, HighQualityAudio, HighQualit
 async def play_command(client, message):
     query = message.text.split(None, 1)[1]
     chat_id = message.chat.id
-    
+
     try:
-        # Get audio info (URL or file_path)
         result = await YoutubeDownload(query, message)
-        
-        # Check if we got a URL (API) or file_path (fallback)
-        if 'url' in result:
-            # STREAM URL DIRECTLY - NO DOWNLOAD!
-            stream_url = result['url']
-            print(f"✅ Streaming from URL: {stream_url}")
-        else:
-            # Use local file (fallback)
-            stream_url = result['file_path']
-            print(f"✅ Streaming from file: {stream_url}")
-        
-        # Play with PyTgCalls
+
+        stream_url = result['url'] if 'url' in result else result['file_path']
+
         await pytgcalls.play(
             chat_id,
             AudioPiped(stream_url, HighQualityAudio())
         )
-        
+
         await message.reply_text(f"🎵 Playing: {result['title']}")
-        
+
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
 
@@ -354,29 +317,19 @@ async def play_command(client, message):
 async def vplay_command(client, message):
     query = message.text.split(None, 1)[1]
     chat_id = message.chat.id
-    
+
     try:
-        # Get video info (URL or file_path)
         result = await YoutubeVideDownload(query, message)
-        
-        # Check if we got a URL (API) or file_path (fallback)
-        if 'url' in result:
-            # STREAM URL DIRECTLY - NO DOWNLOAD!
-            stream_url = result['url']
-            print(f"✅ Streaming from URL: {stream_url}")
-        else:
-            # Use local file (fallback)
-            stream_url = result['file_path']
-            print(f"✅ Streaming from file: {stream_url}")
-        
-        # Play with PyTgCalls
+
+        stream_url = result['url'] if 'url' in result else result['file_path']
+
         await pytgcalls.play(
             chat_id,
             VideoPiped(stream_url, HighQualityVideo(), HighQualityAudio())
         )
-        
+
         await message.reply_text(f"🎬 Playing: {result['title']}")
-        
+
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
 """
